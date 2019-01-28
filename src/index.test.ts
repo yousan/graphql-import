@@ -775,7 +775,7 @@ test('missing union type', t => {
   t.is(err.message, `Couldn't find type C in any of the schemas.`)
 })
 
-test('missing type on input type', t => {
+test('missing type on input type #2', t => {
   const err = t.throws(
     () => importSchema('fixtures/type-not-found/f.graphql'),
     Error,
@@ -806,4 +806,23 @@ type User {
 }
 `
   t.is(importSchema('fixtures/collision/a.graphql'), expectedSDL)
+})
+
+test.only('import specific types', t => {
+  const expectedSDL = `\
+type User implements B {
+  b: String!
+  c: [C!]!
+}
+
+interface B {
+  B: String!
+}
+
+type C {
+  c: String
+}
+`
+
+  t.is(importSchema('fixtures/specific/a.graphql'), expectedSDL)
 })
