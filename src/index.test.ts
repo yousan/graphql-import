@@ -162,12 +162,10 @@ type Query {
   t.is(importSchema('fixtures/import-nested/all.graphql'), expectedSDL)
 })
 
-test('importSchema: field types', t => {
+test.only('importSchema: field types', t => {
   const expectedSDL = `\
-type A {
-  first: String
-  second: Float
-  b: B
+type C {
+  id: ID!
 }
 
 type B {
@@ -175,8 +173,10 @@ type B {
   hello: String!
 }
 
-type C {
-  id: ID!
+type A {
+  first: String
+  second: Float
+  b: B
 }
 `
   t.is(importSchema('fixtures/field-types/a.graphql'), expectedSDL)
