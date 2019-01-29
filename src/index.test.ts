@@ -808,7 +808,7 @@ type User {
   t.is(importSchema('fixtures/collision/a.graphql'), expectedSDL)
 })
 
-test.only('import specific types', t => {
+test('import specific types', t => {
   const expectedSDL = `\
 type User implements B {
   b: String!
@@ -823,6 +823,16 @@ type C {
   c: String
 }
 `
-
   t.is(importSchema('fixtures/specific/a.graphql'), expectedSDL)
+})
+
+test.only('throws on unimported type', t => {
+  const err = t.throws(() => {
+    importSchema('fixtures/specific/a.graphql')
+  }, Error)
+
+  t.is(
+    err.message,
+    "Field d: Couldn't find type UnimportedType in any of the schemas.",
+  )
 })
