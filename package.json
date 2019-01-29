@@ -14,15 +14,6 @@
   "typescript": {
     "definition": "dist/index.d.ts"
   },
-  "ava": {
-    "compileEnhancements": false,
-    "extensions": [
-      "ts"
-    ],
-    "require": [
-      "ts-node/register"
-    ]
-  },
   "nyc": {
     "extension": [
       ".ts"

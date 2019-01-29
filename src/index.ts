@@ -6,26 +6,42 @@ import {
   ObjectTypeDefinitionNode,
   DocumentNode,
   Kind,
+  DirectiveDefinitionNode,
   TypeDefinitionNode,
+  isObjectType,
+  isInterfaceType,
+  isInputObjectType,
 } from 'graphql'
-import { flatten, groupBy, includes, keyBy, isEqual } from 'lodash'
+import { flatten } from 'lodash'
 import * as path from 'path'
 import * as resolveFrom from 'resolve-from'
-import { completeDefinitionPool, ValidDefinitionNode } from './definition'
+
+export type ValidDefinitionNode = DirectiveDefinitionNode | TypeDefinitionNode
 
 /**
  * Describes the imports of a particular file.
  */
-export interface RawModule {
-  imports: string[]
+export type RawModule = {
   from: string
+  imports:
+    | ImportAll
+    | (
+        | DirectiveImport
+        | ScalarImport
+        | ObjectImport
+        | InterfaceImport
+        | EnumImport
+        | UnionImport
+        | InputImport)[]
 }
-
-export interface Module {
-  imports: string[]
-  from: string
-  definitions: ValidDefinitionNode[]
-}
+export type ImportAll = '*'
+export type DirectiveImport = string
+export type ScalarImport = string
+export type ObjectImport = string | { type: string; field: string }
+export type InterfaceImport = string | { type: string; field: string }
+export type EnumImport = string
+export type UnionImport = string
+export type InputImport = string
 
 /**
  *
@@ -43,8 +59,8 @@ export interface Module {
  */
 export function importSchema(
   schema: string,
-  schemas?: { [key: string]: string },
-  processedImports?: string[],
+  schemas: { [key: string]: string } = {},
+  processedImports: string[] = [],
 ): string {
   /* Parse the imported schema */
 
@@ -60,16 +76,11 @@ export function importSchema(
   /* Collect definitions from the imports */
 
   const rawModules: RawModule[] = parseSDL(sdl)
-  const modules: Module[] = rawModules.map(rawModule =>
+  const modules: ValidDefinitionNode[][] = rawModules.map(rawModule =>
     importModule(rawModule, schema, schemas),
   )
 
-  const importedTypeDefinitions: ValidDefinitionNode[] = modules.reduce(
-    (acc, module) => {
-      return acc
-    },
-    [],
-  )
+  const importedTypeDefinitions: ValidDefinitionNode[] = flatten(modules)
 
   const importedRootTypeDefinitions = filterRootTypeDefinitions(
     importedTypeDefinitions,
@@ -80,7 +91,12 @@ export function importSchema(
 
   /* Merge root types */
 
-  const rootTypes = importedRootTypeDefinitions.reduce((acc, definition) => {
+  debugger
+
+  const rootTypes = [
+    ...rootTypeDefinitions,
+    ...importedRootTypeDefinitions,
+  ].reduce<ObjectTypeDefinitionNode[]>((acc, definition) => {
     /**
      * Find existing definition (bottom case from the imported schema)
      * and merge it with the imported one.
@@ -92,23 +108,57 @@ export function importSchema(
     if (existingDefinition) {
       /* Merge definitions */
       ;(existingDefinition as any) /* Overrides readonly */.fields = [
-        ...(existingDefinition as ObjectTypeDefinitionNode).fields,
+        ...existingDefinition.fields,
         ...definition.fields,
       ]
+
+      return acc
+    } else {
+      return [...acc, definition]
+    }
+  }, [])
+
+  /* Merge other imported types */
+
+  const otherTypes = [
+    ...otherTypeDefinitions,
+    ...importedOtherTypeDefinitions,
+  ].reduceRight<ValidDefinitionNode[]>((acc, definition) => {
+    const existingDefinition = acc.find(existingDefinition =>
+      isDefinition(existingDefinition, definition),
+    )
+
+    if (existingDefinition) {
+      return acc
+      // if (
+      //   definition.kind === 'DirectiveDefinition' ||
+      //   definition.kind === 'ScalarTypeDefinition' ||
+      //   definition.kind === 'EnumTypeDefinition' ||
+      //   definition.kind === 'UnionTypeDefinition' ||
+      //   /* Because TypeScript is made by idiots */
+      //   existingDefinition.kind === 'DirectiveDefinition' ||
+      //   existingDefinition.kind === 'ScalarTypeDefinition' ||
+      //   existingDefinition.kind === 'EnumTypeDefinition' ||
+      //   existingDefinition.kind === 'UnionTypeDefinition'
+      // ) {
+      //   return acc
+      // }
+
+      // /* Merge definitions */
+      // ;(existingDefinition as any) /* Overrides readonly */.fields = [
+      //   ...existingDefinition.fields,
+      //   ...definition.fields,
+      // ]
     }
 
-    return acc
-  }, rootTypeDefinitions)
+    return [...acc, definition]
+  }, [])
 
   /* Bundles document */
 
   const bundledDocuments = {
     ...document,
-    definitions: [
-      ...rootTypes,
-      ...otherTypeDefinitions,
-      ...importedOtherTypeDefinitions,
-    ],
+    definitions: [...rootTypes, ...otherTypes],
   }
 
   return print(bundledDocuments)
@@ -158,6 +208,24 @@ export function importSchema(
   }
 
   /**
+   * Parses a schema into a graphql DocumentNode.
+   * If the schema is empty a DocumentNode with empty definitions will be created.
+   *
+   * @param sdl Schema to parse
+   * @returns A graphql DocumentNode with definitions of the parsed sdl.
+   */
+  function getDocumentFromSDL(sdl: string): DocumentNode {
+    if (isEmptySDL(sdl)) {
+      return {
+        kind: Kind.DOCUMENT,
+        definitions: [],
+      }
+    } else {
+      return parse(sdl, { noLocation: true })
+    }
+  }
+
+  /**
    * Resolve the path of an import.
    * First it will try to find a file relative from the file the import is in,
    * if that fails it will try to resolve it as a module
@@ -189,10 +257,10 @@ export function importSchema(
    * @param a
    * @param b
    */
-  function isDefinition(
-    a: ValidDefinitionNode,
-    b: ValidDefinitionNode,
-  ): boolean {
+  function isDefinition<
+    X extends ValidDefinitionNode,
+    Y extends ValidDefinitionNode
+  >(a: X, b: Y): b is Y {
     return a.name.value === b.name.value
   }
 
@@ -250,84 +318,96 @@ export function importSchema(
     rawModule: RawModule,
     filePath: string,
     schemas?: { [key: string]: string },
-  ): Module {
+  ): ValidDefinitionNode[] {
     const key = isFile(schema) ? path.resolve(schema) : schema
+
+    /* Break circular dependencies */
+
+    if (processedImports.includes(key)) {
+      return []
+    }
+
     const moduleFilePath = resolveModuleFilePath(filePath, rawModule.from)
 
     /* Import schema */
 
-    const importedSchema = importSchema(filePath, schemas)
-    const importedSdl = read(importedSchema)
-    const importedDocument = getDocumentFromSDL(importedSdl)
+    const importedSchema = importSchema(moduleFilePath, schemas, [
+      ...processedImports,
+      key,
+    ])
+    const importedDocument = getDocumentFromSDL(importedSchema)
     const allDefinitions = filterTypeDefinitions(importedDocument.definitions)
 
     /* Filter imports */
 
-    const importedDefinitions = []
+    const imports = rawModule.imports
 
-    return {
-      from: rawModule.from,
-      imports: rawModule.imports,
-      definitions: importedDefinitions,
+    if (imports === '*') {
+      return allDefinitions
     }
-  }
-}
 
-/**
- * Filter the types loaded from a schema, first by relevant types,
- * then by the types specified in the import statement.
- *
- * @param imports Types specified in the import statement
- * @param typeDefinitions All definitions from a schema
- * @returns Filtered collection of type definitions
- */
-function filterImportedDefinitions(
-  imports: string[],
-  typeDefinitions: ReadonlyArray<DefinitionNode>,
-  allDefinitions: ValidDefinitionNode[][] = [],
-): ValidDefinitionNode[] {
-  // This should do something smart with fields
+    const importedDefinitions = imports.reduce<ValidDefinitionNode[]>(
+      (acc, _import) => {
+        /* Handle import */
 
-  const filteredDefinitions = filterTypeDefinitions(typeDefinitions)
+        switch (typeof _import) {
+          case 'object': {
+            const parsedImport = `${_import.type}.${_import.field}`
 
-  if (includes(imports, '*')) {
-    if (
-      imports.length === 1 &&
-      imports[0] === '*' &&
-      allDefinitions.length > 1
-    ) {
-      const previousTypeDefinitions: { [key: string]: DefinitionNode } = keyBy(
-        flatten(allDefinitions.slice(0, allDefinitions.length - 1)).filter(
-          def => !includes(rootFields, def.name.value),
-        ),
-        def => def.name.value,
-      )
-      return typeDefinitions.filter(
-        typeDef =>
-          typeDef.kind === 'ObjectTypeDefinition' &&
-          previousTypeDefinitions[typeDef.name.value],
-      ) as ObjectTypeDefinitionNode[]
-    }
-    return filteredDefinitions
-  } else {
-    const result = filteredDefinitions.filter(d =>
-      includes(imports.map(i => i.split('.')[0]), d.name.value),
+            const definition = allDefinitions.find(
+              definition => definition.name.value === _import.type,
+            )
+
+            if (!definition) {
+              throw new Error(
+                `Couldn't find ${_import.type} in ${moduleFilePath}.`,
+              )
+            }
+
+            const validKinds = [
+              'ObjectTypeDefinition',
+              'InterfaceTypeDefinition',
+              'InputObjectTypeDefinition',
+            ]
+
+            if (!validKinds.includes(definition.kind)) {
+              throw new Error(`Couldn't import ${parsedImport}.`)
+            }
+
+            const field = (definition as any).fields.find(
+              field => field.name.value === _import.field,
+            )
+
+            if (!field) {
+              throw new Error(
+                `Couldn't find ${parsedImport} in ${moduleFilePath}.`,
+              )
+            }
+
+            const newDefinition = {
+              ...definition,
+              fields: [field],
+            }
+
+            return [...acc, newDefinition]
+          }
+          case 'string': {
+            const definition = allDefinitions.find(
+              definition => definition.name.value === _import,
+            )
+
+            if (!definition) {
+              throw new Error(`Couldn't find ${_import} in ${moduleFilePath}.`)
+            }
+
+            return [...acc, definition]
+          }
+        }
+      },
+      [],
     )
-    const fieldImports = imports.filter(i => i.split('.').length > 1)
-    const groupedFieldImports = groupBy(fieldImports, x => x.split('.')[0])
 
-    for (const rootType in groupedFieldImports) {
-      const fields = groupedFieldImports[rootType].map(x => x.split('.')[1])
-      ;(filteredDefinitions.find(
-        def => def.name.value === rootType,
-      ) as any).fields = (filteredDefinitions.find(
-        def => def.name.value === rootType,
-      ) as ObjectTypeDefinitionNode).fields.filter(
-        f => includes(fields, f.name.value) || includes(fields, '*'),
-      )
-    }
-
-    return result
+    return importedDefinitions
   }
 }
 
@@ -347,12 +427,32 @@ export function parseImportLine(importLine: string): RawModule {
   // Extract matches into named variables
   const [, wildcard, importsString, , from] = matches
 
-  // Extract imported types
-  const imports =
-    wildcard === '*' ? ['*'] : importsString.split(',').map(d => d.trim())
+  /* Wildcard */
 
-  // Return information about the import line
-  return { imports, from }
+  if (wildcard === '*') return { imports: '*', from }
+
+  /* Selectors */
+
+  const imports = importsString.split(',').map(d => d.trim())
+  const parsedImports = imports.map(i => {
+    /**
+     * Parses particular import. The only two options are
+     * either importing a type/directive... "name" (ex. "Query")
+     * or a specific field  "name.field" (ex. "Query.hello")
+     */
+    const iMatches = i.match(/(^\w+$)|(?:^(\w+)\.(\w+)$)/)
+    const [, type, sType, sField] = iMatches
+
+    if (!type && (!sType || !sField)) {
+      throw new Error(`Faulty import ${i}.`)
+    }
+
+    if (type) return type
+
+    return { type: sType, field: sField }
+  })
+
+  return { imports: parsedImports, from }
 }
 
 /**
@@ -368,22 +468,4 @@ export function parseSDL(sdl: string): RawModule[] {
     .filter(l => l.startsWith('# import ') || l.startsWith('#import '))
     .map(l => l.replace('#', '').trim())
     .map(parseImportLine)
-}
-
-/**
- * Parses a schema into a graphql DocumentNode.
- * If the schema is empty a DocumentNode with empty definitions will be created.
- *
- * @param sdl Schema to parse
- * @returns A graphql DocumentNode with definitions of the parsed sdl.
- */
-function getDocumentFromSDL(sdl: string): DocumentNode {
-  if (isEmptySDL(sdl)) {
-    return {
-      kind: Kind.DOCUMENT,
-      definitions: [],
-    }
-  } else {
-    return parse(sdl, { noLocation: true })
-  }
 }

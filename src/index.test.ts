@@ -24,6 +24,14 @@ test('parseImportLine: invalid 2', t => {
   t.throws(() => parseImportLine(`import A from ""`), Error)
 })
 
+test('parseImportLine: invalid 3', t => {
+  t.throws(() => parseImportLine(`import A. from ""`), Error)
+})
+
+test('parseImportLine: invalid 4', t => {
+  t.throws(() => parseImportLine(`import A.* from ""`), Error)
+})
+
 test('parseImportLine: parse multi import', t => {
   t.deepEqual(parseImportLine(`import A, B from "schema.graphql"`), {
     imports: ['A', 'B'],
@@ -52,6 +60,20 @@ test('parseImportLine: module in node_modules', t => {
   })
 })
 
+test('parseImportLine: specific field', t => {
+  t.deepEqual(parseImportLine(`import A.b from "module-name"`), {
+    imports: [{ type: 'A', field: 'b' }],
+    from: 'module-name',
+  })
+})
+
+test('parseImportLine: multiple specific fields', t => {
+  t.deepEqual(parseImportLine(`import A.b, G.q from "module-name"`), {
+    imports: [{ type: 'A', field: 'b' }, { type: 'G', field: 'q' }],
+    from: 'module-name',
+  })
+})
+
 test('parseSDL: non-import comment', t => {
   t.deepEqual(parseSDL(`#importent: comment`), [])
 })
@@ -67,13 +89,14 @@ test('parse: multi line import', t => {
       from: 'a.graphql',
     },
     {
-      imports: ['*'],
+      imports: '*',
       from: 'b.graphql',
     },
   ])
 })
 
 test('Module in node_modules', t => {
+  // TODO:
   const b = `\
 # import lower from './lower.graphql'
 type B {
@@ -723,80 +746,6 @@ type Shared {
   t.is(importSchema('fixtures/global/a.graphql', { shared }), expectedSDL)
 })
 
-test('missing type on type', t => {
-  const err = t.throws(
-    () => importSchema('fixtures/type-not-found/a.graphql'),
-    Error,
-  )
-  t.is(
-    err.message,
-    `Field test: Couldn't find type Post in any of the schemas.`,
-  )
-})
-
-test('missing type on interface', t => {
-  const err = t.throws(
-    () => importSchema('fixtures/type-not-found/b.graphql'),
-    Error,
-  )
-  t.is(
-    err.message,
-    `Field test: Couldn't find type Post in any of the schemas.`,
-  )
-})
-
-test('missing type on input type', t => {
-  const err = t.throws(
-    () => importSchema('fixtures/type-not-found/c.graphql'),
-    Error,
-  )
-  t.is(
-    err.message,
-    `Field post: Couldn't find type Post in any of the schemas.`,
-  )
-})
-
-test('missing interface type', t => {
-  const err = t.throws(
-    () => importSchema('fixtures/type-not-found/d.graphql'),
-    Error,
-  )
-  t.is(
-    err.message,
-    `Couldn't find interface MyInterface in any of the schemas.`,
-  )
-})
-
-test('missing union type', t => {
-  const err = t.throws(
-    () => importSchema('fixtures/type-not-found/e.graphql'),
-    Error,
-  )
-  t.is(err.message, `Couldn't find type C in any of the schemas.`)
-})
-
-test('missing type on input type #2', t => {
-  const err = t.throws(
-    () => importSchema('fixtures/type-not-found/f.graphql'),
-    Error,
-  )
-  t.is(
-    err.message,
-    `Field myfield: Couldn't find type Post in any of the schemas.`,
-  )
-})
-
-test('missing type on directive', t => {
-  const err = t.throws(
-    () => importSchema('fixtures/type-not-found/g.graphql'),
-    Error,
-  )
-  t.is(
-    err.message,
-    `Directive first: Couldn't find type first in any of the schemas.`,
-  )
-})
-
 test('import with collision', t => {
   // Local type gets preference over imported type
   const expectedSDL = `\
@@ -824,15 +773,4 @@ type C {
 }
 `
   t.is(importSchema('fixtures/specific/a.graphql'), expectedSDL)
-})
-
-test.only('throws on unimported type', t => {
-  const err = t.throws(() => {
-    importSchema('fixtures/specific/a.graphql')
-  }, Error)
-
-  t.is(
-    err.message,
-    "Field d: Couldn't find type UnimportedType in any of the schemas.",
-  )
 })
